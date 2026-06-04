@@ -342,7 +342,7 @@ export default function PortalPage() {
             </>
           )}
           <div style={{ marginTop: 12, padding: '10px 14px', background: '#f8fafc', borderRadius: 8, fontSize: 12, color: '#64748b' }}>
-            To update your contact information, please call us at <strong>(555) 000-0000</strong>.
+            To update your contact information, please call us at <strong>(928) 843-7767</strong>.
           </div>
         </Card>
 
