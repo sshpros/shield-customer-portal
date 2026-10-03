@@ -55,6 +55,7 @@ export default function PortalPage() {
   const [cardMsg, setCardMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [certLoading, setCertLoading] = useState(false);
   const [docLoading, setDocLoading] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const collectConfigured = useRef(false);
 
   // Read token from URL
@@ -64,6 +65,13 @@ export default function PortalPage() {
     if (!t) { setError('No access link found. Please use the link sent by your security provider.'); setLoading(false); return; }
     setToken(t);
   }, []);
+
+  // `#history` deep link (e.g. from a receipt email) opens Billing History.
+  useEffect(() => {
+    if (!data || window.location.hash !== '#history') return;
+    setShowHistory(true);
+    setTimeout(() => document.getElementById('history')?.scrollIntoView({ behavior: 'smooth' }), 50);
+  }, [data]);
 
   // Fetch portal data once token is set
   useEffect(() => {
@@ -336,49 +344,75 @@ export default function PortalPage() {
           )}
         </Card>
 
-        {/* Invoices */}
-        <Card title="Invoices">
-          {invoices.length === 0 ? (
-            <div style={{ fontSize: 14, color: 'var(--text-3)' }}>No invoices yet.</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {invoices.map((inv) => {
-                const owed = inv.balance > 0.01;
-                return (
-                  <a key={inv.id} href={inv.url} target="_blank" rel="noopener noreferrer"
-                     style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: 'var(--panel)', borderRadius: 10, padding: '12px 14px', textDecoration: 'none', color: 'inherit' }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>{inv.title || `Invoice ${inv.number}`}</div>
-                      <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{inv.number} · {fmtDate(inv.date)}</div>
-                    </div>
-                    <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
-                      <div style={{ fontWeight: 600, fontSize: 14 }}>{money(inv.total)}</div>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: owed ? RED : GREEN, marginTop: 2 }}>{owed ? `${money(inv.balance)} due · Pay` : 'Paid'}</div>
-                    </div>
-                  </a>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-
-        {/* Receipts & documents */}
-        {documents.length > 0 && (
-          <Card title="Receipts & Documents">
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {documents.map((doc) => (
-                <div key={doc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: 'var(--panel)', borderRadius: 10, padding: '12px 14px' }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.title}</div>
-                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{doc.category} · {fmtDate(doc.uploaded_at)}</div>
-                  </div>
-                  <button onClick={() => downloadDocument(doc.id)} disabled={docLoading === doc.id} style={smallBtn(BLUE_TEXT)}>
-                    {docLoading === doc.id ? '…' : 'Download'}
-                  </button>
+        {/* Billing history — invoices + receipts, collapsed until opened */}
+        {(invoices.length > 0 || documents.length > 0) && (
+          <div id="history" style={{ background: 'var(--card)', borderRadius: 16, boxShadow: 'var(--shadow)' }}>
+            <button
+              onClick={() => setShowHistory(v => !v)}
+              aria-expanded={showHistory}
+              style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 12, background: 'none', border: 'none', padding: '20px', cursor: 'pointer', color: 'var(--text)', textAlign: 'left' }}
+            >
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 16, fontWeight: 700 }}>Billing History</div>
+                <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 4 }}>
+                  {(() => {
+                    const n = (k: number, one: string, many: string) => k ? `${k} ${k === 1 ? one : many}` : '';
+                    const receipts = documents.filter(d => d.category === 'Receipt').length;
+                    return [n(invoices.length, 'invoice', 'invoices'), n(receipts, 'receipt', 'receipts'),
+                            n(documents.length - receipts, 'signed estimate', 'signed estimates')].filter(Boolean).join(' · ');
+                  })()}
+                  {invoices.some(i => i.balance > 0.01) && <span style={{ color: RED, fontWeight: 600 }}> · balance due</span>}
                 </div>
-              ))}
-            </div>
-          </Card>
+              </div>
+              <span style={{ fontSize: 18, color: 'var(--text-3)', transform: showHistory ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>›</span>
+            </button>
+
+            {showHistory && (
+              <div style={{ padding: '0 20px 20px', display: 'flex', flexDirection: 'column', gap: 18 }}>
+                {invoices.length > 0 && (
+                  <div>
+                    <div style={sectionLabel}>Invoices</div>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {invoices.map((inv) => {
+                          const owed = inv.balance > 0.01;
+                          return (
+                            <a key={inv.id} href={inv.url} target="_blank" rel="noopener noreferrer"
+                               style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: 'var(--panel)', borderRadius: 10, padding: '12px 14px', textDecoration: 'none', color: 'inherit' }}>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: 14 }}>{inv.title || `Invoice ${inv.number}`}</div>
+                                <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{inv.title ? `${inv.number} · ` : ''}{fmtDate(inv.date)}</div>
+                              </div>
+                              <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                <div style={{ fontWeight: 600, fontSize: 14 }}>{money(inv.total)}</div>
+                                <div style={{ fontSize: 12, fontWeight: 600, color: owed ? RED : GREEN, marginTop: 2 }}>{owed ? `${money(inv.balance)} due · Pay` : 'Paid'}</div>
+                              </div>
+                            </a>
+                          );
+                        })}
+                      </div>
+                  </div>
+                )}
+                {documents.length > 0 && (
+                  <div>
+                    <div style={sectionLabel}>Receipts &amp; Documents</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {documents.map((doc) => (
+                        <div key={doc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: 'var(--panel)', borderRadius: 10, padding: '12px 14px' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.title}</div>
+                            <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{doc.category} · {fmtDate(doc.uploaded_at)}</div>
+                          </div>
+                          <button onClick={() => downloadDocument(doc.id)} disabled={docLoading === doc.id} style={smallBtn(BLUE_TEXT)}>
+                            {docLoading === doc.id ? '…' : 'Download'}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Contact Info (read-only) */}
@@ -478,6 +512,9 @@ const outlineBtn: React.CSSProperties = {
 };
 const linkBtn: React.CSSProperties = {
   background: 'none', border: 'none', color: BLUE_TEXT, fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0,
+};
+const sectionLabel: React.CSSProperties = {
+  fontSize: 12, fontWeight: 600, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 10,
 };
 const fieldLabel: React.CSSProperties = {
   display: 'block', fontSize: 12, fontWeight: 600, color: 'var(--text-3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.04em',
