@@ -12,11 +12,26 @@ const RED = 'var(--red)';
 
 interface MonitoringContact { id: string; name: string; phone: string; dispatchType: string; }
 interface PaymentMethod { id: string; last4: string; brand: string; payment_type: string; expiry: string; nickname: string; is_primary: boolean; created_at: string; }
+interface Service { id: string; name: string; amount: number; frequency: string; autoPay: boolean; nextChargeDate: string | null; lastCharged: { amount: number; date: string } | null; }
+interface Invoice { id: string; number: string; title: string; status: string; total: number; paid: number; balance: number; date: string; dueDate: string | null; url: string; }
+interface Doc { id: string; title: string; category: string; uploaded_at: string; }
 interface PortalData {
   customer: { id: string; name: string; email: string; phone: string; secondaryContactName: string; secondaryContactPhone: string; };
-  monitoring: { active: boolean; cost: number; frequency: string; accountId: string; verbalPassword: string; contacts: MonitoringContact[]; hasCertificate: boolean; };
+  monitoring: { active: boolean; accountId: string; verbalPassword: string; contacts: MonitoringContact[]; hasCertificate: boolean; };
   paymentMethods: PaymentMethod[];
+  services: Service[];
+  invoices: Invoice[];
+  documents: Doc[];
 }
+
+const money = (n: number) => n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+// DATE columns ("2026-11-01") render at local noon so they never slip a day.
+const fmtDate = (s: string | null | undefined) => {
+  if (!s) return '';
+  const d = new Date(s.length <= 10 ? s + 'T12:00:00' : s);
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+const perLabel = (f: string) => ({ Monthly: 'month', Quarterly: 'quarter', Yearly: 'year' } as Record<string, string>)[f] ?? f.toLowerCase();
 
 declare global {
   interface Window {
@@ -38,8 +53,8 @@ export default function PortalPage() {
   const [collectReady, setCollectReady] = useState(false);
   const [addingCard, setAddingCard] = useState(false);
   const [cardMsg, setCardMsg] = useState<{ text: string; ok: boolean } | null>(null);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [certLoading, setCertLoading] = useState(false);
+  const [docLoading, setDocLoading] = useState<string | null>(null);
   const collectConfigured = useRef(false);
 
   // Read token from URL
@@ -125,51 +140,33 @@ export default function PortalPage() {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-payment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, action: 'add', payment_token: paymentToken, card_type: cardType, set_as_primary: data.paymentMethods.length === 0 }),
+        body: JSON.stringify({ token, action: 'add', payment_token: paymentToken, card_type: cardType }),
       });
       const json = await res.json();
       if (!res.ok || json.error) { setCardMsg({ text: json.error ?? 'Failed to save card.', ok: false }); }
       else {
-        setCardMsg({ text: 'Card saved successfully.', ok: true });
-        setData(d => d ? { ...d, paymentMethods: [...d.paymentMethods, json.method].sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0)) } : d);
+        setCardMsg({ text: 'Card saved. Future charges will use this card.', ok: true });
+        setData(d => d ? { ...d, paymentMethods: [{ ...json.method, id: 'on-file', is_primary: true }] } : d);
         setTimeout(() => { setShowAddCard(false); setCardMsg(null); collectConfigured.current = false; }, 1500);
       }
     } catch { setCardMsg({ text: 'Network error.', ok: false }); }
     setAddingCard(false);
   }
 
-  async function setPrimary(methodId: string) {
+  async function downloadDocument(documentId: string) {
     if (!token) return;
-    setActionLoading(methodId + '_primary');
+    setDocLoading(documentId);
     try {
-      const res = await fetch(`${SUPABASE_URL}/customer-portal-payment`, {
+      const res = await fetch(`${SUPABASE_URL}/customer-portal-document`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, action: 'set_primary', method_id: methodId }),
+        body: JSON.stringify({ token, document_id: documentId }),
       });
       const json = await res.json();
-      if (json.success) {
-        setData(d => d ? { ...d, paymentMethods: d.paymentMethods.map(m => ({ ...m, is_primary: m.id === methodId })) } : d);
-      }
-    } catch { /* ignore */ }
-    setActionLoading(null);
-  }
-
-  async function deleteMethod(methodId: string) {
-    if (!token || !confirm('Remove this payment method?')) return;
-    setActionLoading(methodId + '_delete');
-    try {
-      const res = await fetch(`${SUPABASE_URL}/customer-portal-payment`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, action: 'delete', method_id: methodId }),
-      });
-      const json = await res.json();
-      if (json.success) {
-        setData(d => d ? { ...d, paymentMethods: d.paymentMethods.filter(m => m.id !== methodId) } : d);
-      } else { alert(json.error ?? 'Could not remove method.'); }
-    } catch { /* ignore */ }
-    setActionLoading(null);
+      if (json.url) { window.open(json.url, '_blank'); }
+      else { alert('Could not generate download link. Please try again.'); }
+    } catch { alert('Network error.'); }
+    setDocLoading(null);
   }
 
   async function downloadCertificate() {
@@ -192,8 +189,8 @@ export default function PortalPage() {
   if (error) return <ErrorPage message={error} />;
   if (!data) return null;
 
-  const { customer, monitoring, paymentMethods } = data;
-  const sortedMethods = [...paymentMethods].sort((a, b) => (b.is_primary ? 1 : 0) - (a.is_primary ? 1 : 0));
+  const { customer, monitoring, paymentMethods, services = [], invoices = [], documents = [] } = data;
+  const cardOnFile = paymentMethods[0];
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)', paddingBottom: 48 }}>
@@ -208,12 +205,34 @@ export default function PortalPage() {
 
       <div style={{ maxWidth: 640, margin: '0 auto', padding: '24px 16px', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
+        {/* Services — what the customer is charged (never our cost) */}
+        {services.length > 0 && (
+          <Card title="Your Services">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {services.map((s) => (
+                <div key={s.id} style={{ background: 'var(--panel)', borderRadius: 12, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12 }}>
+                    <span style={{ fontWeight: 600, fontSize: 15 }}>{s.name}</span>
+                    <span style={{ fontWeight: 700, fontSize: 15, whiteSpace: 'nowrap' }}>{money(s.amount)}<span style={{ fontWeight: 500, fontSize: 12, color: 'var(--text-3)' }}> / {perLabel(s.frequency)}</span></span>
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 6 }}>
+                    {s.autoPay
+                      ? (s.nextChargeDate ? `Auto-pay · next charge ${fmtDate(s.nextChargeDate)}` : 'Auto-pay')
+                      : 'Billed by invoice'}
+                    {s.lastCharged && ` · last charged ${money(s.lastCharged.amount)} on ${fmtDate(s.lastCharged.date)}`}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: 'var(--text-dim)', marginTop: 10 }}>Prices shown before applicable sales tax.</div>
+          </Card>
+        )}
+
         {/* Monitoring */}
         <Card title="Monitoring Plan">
           {monitoring.active ? (
             <>
               <Badge color={GREEN} text="Central Station Monitoring — Active" />
-              <Row label="Monthly Cost" value={monitoring.cost > 0 ? `$${monitoring.cost.toFixed(2)} / ${monitoring.frequency}` : '—'} />
               {monitoring.accountId && <Row label="Account ID" value={monitoring.accountId} mono />}
               {monitoring.verbalPassword && (
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border-soft)' }}>
@@ -253,45 +272,28 @@ export default function PortalPage() {
           )}
         </Card>
 
-        {/* Payment Methods */}
-        <Card title="Payment Methods">
-          {sortedMethods.length === 0 ? (
-            <div style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 12 }}>No payment methods on file.</div>
+        {/* Payment Method — the card we charge */}
+        <Card title="Payment Method">
+          {!cardOnFile ? (
+            <div style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 12 }}>No payment method on file.</div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 12 }}>
-              {sortedMethods.map((m) => {
-                const label = m.last4 ? `${m.brand || (m.payment_type === 'ach' ? 'Bank' : 'Card')} •••• ${m.last4}` : m.brand || 'Payment method';
-                const isPrimaryLoading = actionLoading === m.id + '_primary';
-                const isDeleteLoading = actionLoading === m.id + '_delete';
-                return (
-                  <div key={m.id} style={{ background: 'var(--panel)', border: m.is_primary ? `1.5px solid ${BLUE_TEXT}` : '1.5px solid var(--border)', borderRadius: 12, padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-                      <CardIcon brand={m.brand} type={m.payment_type} />
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 15 }}>{label}</div>
-                        {m.expiry && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Exp {m.expiry}</div>}
-                      </div>
-                      {m.is_primary && <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: BLUE_TEXT, background: `color-mix(in srgb, ${BLUE_TEXT} 12%, transparent)`, padding: '3px 10px', borderRadius: 20 }}>DEFAULT</span>}
-                    </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {!m.is_primary && (
-                        <button onClick={() => setPrimary(m.id)} disabled={!!actionLoading} style={smallBtn(BLUE)}>
-                          {isPrimaryLoading ? '…' : 'Set as Default'}
-                        </button>
-                      )}
-                      <button onClick={() => deleteMethod(m.id)} disabled={!!actionLoading || paymentMethods.length <= 1} style={smallBtn(RED)}>
-                        {isDeleteLoading ? '…' : 'Remove'}
-                      </button>
-                    </div>
+            <div style={{ background: 'var(--panel)', border: `1.5px solid ${BLUE_TEXT}`, borderRadius: 12, padding: '14px 16px', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <CardIcon brand={cardOnFile.brand} type={cardOnFile.payment_type} />
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>
+                    {cardOnFile.last4 ? `${cardOnFile.brand || (cardOnFile.payment_type === 'ach' ? 'Bank' : 'Card')} •••• ${cardOnFile.last4}` : cardOnFile.brand || 'Payment method'}
                   </div>
-                );
-              })}
+                  {cardOnFile.expiry && <div style={{ fontSize: 12, color: 'var(--text-3)' }}>Exp {cardOnFile.expiry}</div>}
+                </div>
+                <span style={{ marginLeft: 'auto', fontSize: 11, fontWeight: 700, color: BLUE_TEXT, background: `color-mix(in srgb, ${BLUE_TEXT} 12%, transparent)`, padding: '3px 10px', borderRadius: 20 }}>ON FILE</span>
+              </div>
             </div>
           )}
 
           {!showAddCard ? (
             <button onClick={() => { setShowAddCard(true); setCardMsg(null); }} style={primaryBtn}>
-              + Add Payment Method
+              {cardOnFile ? 'Replace Card' : '+ Add Payment Method'}
             </button>
           ) : (
             <div style={{ background: 'var(--panel)', border: '1.5px solid var(--border)', borderRadius: 12, padding: 16, marginTop: 4 }}>
@@ -333,6 +335,51 @@ export default function PortalPage() {
             </div>
           )}
         </Card>
+
+        {/* Invoices */}
+        <Card title="Invoices">
+          {invoices.length === 0 ? (
+            <div style={{ fontSize: 14, color: 'var(--text-3)' }}>No invoices yet.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {invoices.map((inv) => {
+                const owed = inv.balance > 0.01;
+                return (
+                  <a key={inv.id} href={inv.url} target="_blank" rel="noopener noreferrer"
+                     style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: 'var(--panel)', borderRadius: 10, padding: '12px 14px', textDecoration: 'none', color: 'inherit' }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{inv.title || `Invoice ${inv.number}`}</div>
+                      <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{inv.number} · {fmtDate(inv.date)}</div>
+                    </div>
+                    <div style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{money(inv.total)}</div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: owed ? RED : GREEN, marginTop: 2 }}>{owed ? `${money(inv.balance)} due · Pay` : 'Paid'}</div>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        {/* Receipts & documents */}
+        {documents.length > 0 && (
+          <Card title="Receipts & Documents">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {documents.map((doc) => (
+                <div key={doc.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: 'var(--panel)', borderRadius: 10, padding: '12px 14px' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.title}</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>{doc.category} · {fmtDate(doc.uploaded_at)}</div>
+                  </div>
+                  <button onClick={() => downloadDocument(doc.id)} disabled={docLoading === doc.id} style={smallBtn(BLUE_TEXT)}>
+                    {docLoading === doc.id ? '…' : 'Download'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {/* Contact Info (read-only) */}
         <Card title="Contact Information">
