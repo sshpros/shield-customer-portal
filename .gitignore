@@ -1,0 +1,12 @@
+# build output & local tooling — never committed
+node_modules/
+.next/
+.vercel/
+tsconfig.tsbuildinfo
+next-env.d.ts
+# local installs; Vercel resolves dependencies from package.json
+package-lock.json
+# Supabase CLI link cache
+supabase/.temp/
+.env*.local
+.DS_Store
