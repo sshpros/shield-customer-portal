@@ -31,6 +31,21 @@ const fmtDate = (s: string | null | undefined) => {
   const d = new Date(s.length <= 10 ? s + 'T12:00:00' : s);
   return isNaN(d.getTime()) ? '' : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 };
+// Sign-in session (from customer-portal-auth). Tab-scoped on purpose: closing
+// the tab or coming back later means a new emailed code (Kyle 2026-11-01).
+const SESSION_KEY = 'shield-portal-session';
+type StoredSession = { session: string; expiresAt: string };
+function readSession(): StoredSession | null {
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    const s = raw ? (JSON.parse(raw) as StoredSession) : null;
+    return s && new Date(s.expiresAt).getTime() > Date.now() + 30_000 ? s : null;
+  } catch { return null; }
+}
+function writeSession(s: StoredSession | null) {
+  try { s ? sessionStorage.setItem(SESSION_KEY, JSON.stringify(s)) : sessionStorage.removeItem(SESSION_KEY); } catch { /* storage blocked: stay signed in for this page view only */ }
+}
+
 const perLabel = (f: string) => ({ Monthly: 'month', Quarterly: 'quarter', Yearly: 'year' } as Record<string, string>)[f] ?? f.toLowerCase();
 
 declare global {
@@ -44,6 +59,8 @@ declare global {
 
 export default function PortalPage() {
   const [token, setToken] = useState<string | null>(null);
+  const [session, setSession] = useState<string | null>(null);
+  const [needsSignIn, setNeedsSignIn] = useState(false);
   const [data, setData] = useState<PortalData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,7 +81,25 @@ export default function PortalPage() {
     const t = params.get('token');
     if (!t) { setError('No access link found. Please use the link sent by your security provider.'); setLoading(false); return; }
     setToken(t);
+    const saved = readSession();
+    if (saved) setSession(saved.session);
+    else { setNeedsSignIn(true); setLoading(false); }
   }, []);
+
+  /** A 401 with `signin` means the session ran out — back to the code screen. */
+  function signedOut() {
+    writeSession(null);
+    setSession(null);
+    setData(null);
+    setNeedsSignIn(true);
+    setLoading(false);
+  }
+
+  async function signOut() {
+    const s = session;
+    signedOut();
+    if (s) fetch(`${SUPABASE_URL}/customer-portal-auth`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'sign_out', session: s }) }).catch(() => {});
+  }
 
   // `#history` deep link (e.g. from a receipt email) opens Billing History.
   useEffect(() => {
@@ -73,23 +108,25 @@ export default function PortalPage() {
     setTimeout(() => document.getElementById('history')?.scrollIntoView({ behavior: 'smooth' }), 50);
   }, [data]);
 
-  // Fetch portal data once token is set
+  // Fetch portal data once signed in
   useEffect(() => {
-    if (!token) return;
+    if (!session) return;
+    setLoading(true);
     (async () => {
       try {
         const res = await fetch(`${SUPABASE_URL}/customer-portal-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token }),
+          body: JSON.stringify({ session }),
         });
         const json = await res.json();
+        if (res.status === 401 && json.signin) { signedOut(); return; }
         if (!res.ok || json.error) { setError(json.error ?? 'Failed to load your account.'); }
         else { setData(json); }
       } catch { setError('Network error. Please try again.'); }
       setLoading(false);
     })();
-  }, [token]);
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load Collect.js when add card is shown
   useEffect(() => {
@@ -141,16 +178,17 @@ export default function PortalPage() {
   }
 
   async function handleCardToken(paymentToken: string, cardType: string) {
-    if (!token || !data) return;
+    if (!session || !data) return;
     setAddingCard(true);
     setCardMsg(null);
     try {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-payment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, action: 'add', payment_token: paymentToken, card_type: cardType }),
+        body: JSON.stringify({ session, action: 'add', payment_token: paymentToken, card_type: cardType }),
       });
       const json = await res.json();
+      if (res.status === 401 && json.signin) { signedOut(); return; }
       if (!res.ok || json.error) { setCardMsg({ text: json.error ?? 'Failed to save card.', ok: false }); }
       else {
         setCardMsg({ text: 'Card saved. Future charges will use this card.', ok: true });
@@ -162,15 +200,16 @@ export default function PortalPage() {
   }
 
   async function downloadDocument(documentId: string) {
-    if (!token) return;
+    if (!session) return;
     setDocLoading(documentId);
     try {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-document`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, document_id: documentId }),
+        body: JSON.stringify({ session, document_id: documentId }),
       });
       const json = await res.json();
+      if (res.status === 401 && json.signin) { signedOut(); return; }
       if (json.url) { window.open(json.url, '_blank'); }
       else { alert('Could not generate download link. Please try again.'); }
     } catch { alert('Network error.'); }
@@ -178,23 +217,27 @@ export default function PortalPage() {
   }
 
   async function downloadCertificate() {
-    if (!token) return;
+    if (!session) return;
     setCertLoading(true);
     try {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-certificate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ session }),
       });
       const json = await res.json();
+      if (res.status === 401 && json.signin) { signedOut(); return; }
       if (json.url) { window.open(json.url, '_blank'); }
       else { alert('Could not generate download link. Please try again.'); }
     } catch { alert('Network error.'); }
     setCertLoading(false);
   }
 
-  if (loading) return <Loading />;
   if (error) return <ErrorPage message={error} />;
+  if (needsSignIn && token) {
+    return <SignIn token={token} onError={setError} onSignedIn={(s) => { writeSession(s); setNeedsSignIn(false); setSession(s.session); }} />;
+  }
+  if (loading) return <Loading />;
   if (!data) return null;
 
   const { customer, monitoring, paymentMethods, services = [], invoices = [], documents = [] } = data;
@@ -207,7 +250,10 @@ export default function PortalPage() {
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
           <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 4 }}>Shield Low Voltage</div>
           <div style={{ fontSize: 22, fontWeight: 700 }}>My Account</div>
-          <div style={{ fontSize: 14, opacity: 0.85, marginTop: 4 }}>{customer.name}</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginTop: 4 }}>
+            <div style={{ fontSize: 14, opacity: 0.85 }}>{customer.name}</div>
+            <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#fff', opacity: 0.85, fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0 }}>Sign out</button>
+          </div>
         </div>
       </div>
 
@@ -434,6 +480,98 @@ export default function PortalPage() {
 
         <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-dim)' }}>
           Shield Low Voltage · Your account is secure
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Sign in ──────────────────────────────────────────────────────────────────
+
+/** Every visit: email a 6-digit code to the address on file, then trade it for
+ *  a session. Nothing is sent until the customer asks — mail scanners open
+ *  links on their own. */
+function SignIn({ token, onSignedIn, onError }: { token: string; onSignedIn: (s: StoredSession) => void; onError: (m: string) => void }) {
+  const [info, setInfo] = useState<{ firstName: string; hasEmail: boolean; maskedEmail: string } | null>(null);
+  const [sent, setSent] = useState(false);
+  const [code, setCode] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const codeRef = useRef<HTMLInputElement>(null);
+
+  const call = async (body: object) => {
+    const res = await fetch(`${SUPABASE_URL}/customer-portal-auth`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, ...body }) });
+    return { status: res.status, json: await res.json().catch(() => ({ error: 'Something went wrong. Please try again.' })) };
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { status, json } = await call({ action: 'start' });
+        if (status === 401 || json.error) onError(json.error ?? 'This link has expired.');
+        else setInfo(json);
+      } catch { onError('Network error. Please try again.'); }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function sendCode() {
+    setBusy(true); setMsg(null);
+    try {
+      const { json } = await call({ action: 'send_code' });
+      if (json.error) setMsg({ text: json.error, ok: false });
+      else { setSent(true); setCode(''); setMsg({ text: `Code sent to ${json.maskedEmail}. It expires in ${json.minutes} minutes.`, ok: true }); setTimeout(() => codeRef.current?.focus(), 50); }
+    } catch { setMsg({ text: 'Network error. Please try again.', ok: false }); }
+    setBusy(false);
+  }
+
+  async function verify(e: React.FormEvent) {
+    e.preventDefault();
+    if (code.replace(/\D/g, '').length !== 6) { setMsg({ text: 'Enter the 6-digit code from the email.', ok: false }); return; }
+    setBusy(true); setMsg(null);
+    try {
+      const { json } = await call({ action: 'verify', code });
+      if (json.session) onSignedIn({ session: json.session, expiresAt: json.expires_at });
+      else { setMsg({ text: json.error ?? 'That code didn\'t work.', ok: false }); if (json.expired) setCode(''); }
+    } catch { setMsg({ text: 'Network error. Please try again.', ok: false }); }
+    setBusy(false);
+  }
+
+  if (!info) return <Loading />;
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: 16 }}>
+      <div style={{ background: 'var(--card)', borderRadius: 16, padding: '32px 24px', maxWidth: 420, width: '100%', boxShadow: 'var(--shadow)' }}>
+        <div style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 6 }}>Shield Low Voltage</div>
+        <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 10px', color: 'var(--text)' }}>Sign in to your account</h1>
+        {!info.hasEmail ? (
+          <p style={{ fontSize: 14, color: 'var(--text-2)', lineHeight: 1.6, margin: 0 }}>
+            There&rsquo;s no email on your account yet, so we can&rsquo;t send you a sign-in code. Call or text Shield at (928) 843-7767 and we&rsquo;ll get you in.
+          </p>
+        ) : (
+          <>
+            <p style={{ fontSize: 14, color: 'var(--text-2)', lineHeight: 1.6, margin: '0 0 20px' }}>
+              Hi {info.firstName}. To protect your account, we&rsquo;ll email a 6-digit code to <b style={{ color: 'var(--text)', whiteSpace: 'nowrap' }}>{info.maskedEmail}</b> each time you sign in.
+            </p>
+            {sent ? (
+              <form onSubmit={verify} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                <label htmlFor="code" style={fieldLabel}>Sign-in code</label>
+                <input
+                  id="code" ref={codeRef} value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]*" maxLength={6} placeholder="••••••"
+                  style={{ fontSize: 26, letterSpacing: '0.4em', textAlign: 'center', padding: '12px 10px', borderRadius: 10, border: '1px solid var(--border-strong)', background: 'var(--input-bg)', color: 'var(--text)', fontFamily: 'ui-monospace, Menlo, monospace', width: '100%', boxSizing: 'border-box' }}
+                />
+                <button type="submit" disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.7 : 1 }}>{busy ? 'Checking…' : 'Sign in'}</button>
+                <button type="button" onClick={sendCode} disabled={busy} style={{ ...linkBtn, fontSize: 13, alignSelf: 'center', marginTop: 4 }}>Email me a new code</button>
+              </form>
+            ) : (
+              <button onClick={sendCode} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.7 : 1 }}>{busy ? 'Sending…' : 'Email me a code'}</button>
+            )}
+            {msg ? <div role="status" style={{ marginTop: 14, fontSize: 13, lineHeight: 1.5, color: msg.ok ? 'var(--text-3)' : RED }}>{msg.text}</div> : null}
+          </>
+        )}
+        <div style={{ marginTop: 22, paddingTop: 16, borderTop: '1px solid var(--border-soft)', fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.6 }}>
+          Shield will never ask for your card number or this code by phone, text or email.
         </div>
       </div>
     </div>
