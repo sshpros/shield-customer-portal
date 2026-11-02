@@ -15,7 +15,9 @@ interface PaymentMethod { id: string; last4: string; brand: string; payment_type
 interface Service { id: string; name: string; amount: number; frequency: string; autoPay: boolean; nextChargeDate: string | null; lastCharged: { amount: number; date: string } | null; }
 interface Invoice { id: string; number: string; title: string; status: string; total: number; paid: number; balance: number; date: string; dueDate: string | null; url: string; }
 interface Doc { id: string; title: string; category: string; uploaded_at: string; }
+interface Account { id: string; name: string; place: string; }
 interface PortalData {
+  accounts?: Account[];
   customer: { id: string; name: string; email: string; phone: string; secondaryContactName: string; secondaryContactPhone: string; };
   monitoring: { active: boolean; accountId: string; verbalPassword: string; contacts: MonitoringContact[]; hasCertificate: boolean; };
   paymentMethods: PaymentMethod[];
@@ -74,6 +76,11 @@ export default function PortalPage() {
   const [docLoading, setDocLoading] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const collectConfigured = useRef(false);
+  // Which of the customer's accounts is showing (null = the one they signed in
+  // to). A ref too, because Collect.js keeps the first callback it was given.
+  const [accountId, setAccountId] = useState<string | null>(null);
+  const accountRef = useRef<string | null>(null);
+  accountRef.current = accountId;
 
   // Read token from URL
   useEffect(() => {
@@ -90,9 +97,21 @@ export default function PortalPage() {
   function signedOut() {
     writeSession(null);
     setSession(null);
+    setAccountId(null);
     setData(null);
     setNeedsSignIn(true);
     setLoading(false);
+  }
+
+  /** Show another of the customer's accounts; the page reloads its data. */
+  function switchAccount(id: string) {
+    setShowAddCard(false);
+    setCardMsg(null);
+    setShowHistory(false);
+    setShowVerbalPassword(false);
+    collectConfigured.current = false;
+    setAccountId(id === data?.accounts?.[0]?.id ? null : id);
+    window.scrollTo({ top: 0 });
   }
 
   async function signOut() {
@@ -117,16 +136,17 @@ export default function PortalPage() {
         const res = await fetch(`${SUPABASE_URL}/customer-portal-data`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session }),
+          body: JSON.stringify({ session, account_id: accountId ?? undefined }),
         });
         const json = await res.json();
         if (res.status === 401 && json.signin) { signedOut(); return; }
+        if (res.status === 403 && accountId) { setAccountId(null); return; }
         if (!res.ok || json.error) { setError(json.error ?? 'Failed to load your account.'); }
         else { setData(json); }
       } catch { setError('Network error. Please try again.'); }
       setLoading(false);
     })();
-  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [session, accountId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load Collect.js when add card is shown
   useEffect(() => {
@@ -185,7 +205,7 @@ export default function PortalPage() {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-payment`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session, action: 'add', payment_token: paymentToken, card_type: cardType }),
+        body: JSON.stringify({ session, account_id: accountRef.current ?? undefined, action: 'add', payment_token: paymentToken, card_type: cardType }),
       });
       const json = await res.json();
       if (res.status === 401 && json.signin) { signedOut(); return; }
@@ -206,7 +226,7 @@ export default function PortalPage() {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-document`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session, document_id: documentId }),
+        body: JSON.stringify({ session, account_id: accountId ?? undefined, document_id: documentId }),
       });
       const json = await res.json();
       if (res.status === 401 && json.signin) { signedOut(); return; }
@@ -223,7 +243,7 @@ export default function PortalPage() {
       const res = await fetch(`${SUPABASE_URL}/customer-portal-certificate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session }),
+        body: JSON.stringify({ session, account_id: accountId ?? undefined }),
       });
       const json = await res.json();
       if (res.status === 401 && json.signin) { signedOut(); return; }
@@ -240,7 +260,7 @@ export default function PortalPage() {
   if (loading) return <Loading />;
   if (!data) return null;
 
-  const { customer, monitoring, paymentMethods, services = [], invoices = [], documents = [] } = data;
+  const { customer, monitoring, paymentMethods, services = [], invoices = [], documents = [], accounts = [] } = data;
   const cardOnFile = paymentMethods[0];
 
   return (
@@ -249,9 +269,25 @@ export default function PortalPage() {
       <div style={{ background: BLUE, padding: '20px 24px', color: '#fff' }}>
         <div style={{ maxWidth: 640, margin: '0 auto' }}>
           <div style={{ fontSize: 13, opacity: 0.75, marginBottom: 4 }}>Shield Low Voltage</div>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>My Account</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{accounts.length > 1 ? `My Accounts (${accounts.length})` : 'My Account'}</div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, marginTop: 4 }}>
-            <div style={{ fontSize: 14, opacity: 0.85 }}>{customer.name}</div>
+            {accounts.length > 1 ? (
+              <label style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', minWidth: 0 }}>
+                <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Account</span>
+                <select
+                  value={customer.id}
+                  onChange={(e) => switchAccount(e.target.value)}
+                  style={{ appearance: 'none', WebkitAppearance: 'none', background: 'rgba(255,255,255,0.16)', color: '#fff', border: '1px solid rgba(255,255,255,0.35)', borderRadius: 8, padding: '6px 28px 6px 10px', fontSize: 14, fontWeight: 600, maxWidth: '100%', textOverflow: 'ellipsis', cursor: 'pointer' }}
+                >
+                  {accounts.map((a) => (
+                    <option key={a.id} value={a.id} style={{ color: '#111' }}>{a.name}{a.place ? ` · ${a.place}` : ''}</option>
+                  ))}
+                </select>
+                <span aria-hidden style={{ position: 'absolute', right: 10, pointerEvents: 'none', fontSize: 11 }}>▼</span>
+              </label>
+            ) : (
+              <div style={{ fontSize: 14, opacity: 0.85 }}>{customer.name}</div>
+            )}
             <button onClick={signOut} style={{ background: 'none', border: 'none', color: '#fff', opacity: 0.85, fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0 }}>Sign out</button>
           </div>
         </div>
