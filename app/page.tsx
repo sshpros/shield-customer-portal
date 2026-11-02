@@ -540,7 +540,7 @@ function SignIn({ token, onSignedIn, onError }: { token: string; onSignedIn: (s:
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', padding: 16 }}>
-      <div style={{ background: 'var(--card)', borderRadius: 16, padding: '32px 24px', maxWidth: 420, width: '100%', boxShadow: 'var(--shadow)' }}>
+      <div style={{ background: 'var(--card)', borderRadius: 16, padding: '32px 24px', maxWidth: 420, width: '100%', boxSizing: 'border-box', boxShadow: 'var(--shadow)' }}>
         <div style={{ fontSize: 13, color: 'var(--text-3)', marginBottom: 6 }}>Shield Low Voltage</div>
         <h1 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 10px', color: 'var(--text)' }}>Sign in to your account</h1>
         {!info.hasEmail ? (
@@ -550,7 +550,7 @@ function SignIn({ token, onSignedIn, onError }: { token: string; onSignedIn: (s:
         ) : (
           <>
             <p style={{ fontSize: 14, color: 'var(--text-2)', lineHeight: 1.6, margin: '0 0 20px' }}>
-              Hi {info.firstName}. To protect your account, we&rsquo;ll email a 6-digit code to <b style={{ color: 'var(--text)', whiteSpace: 'nowrap' }}>{info.maskedEmail}</b> each time you sign in.
+              Hi {info.firstName}. To protect your account, we&rsquo;ll email a 6-digit code to <b style={{ color: 'var(--text)', overflowWrap: 'anywhere' }}>{info.maskedEmail}</b> each time you sign in.
             </p>
             {sent ? (
               <form onSubmit={verify} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
